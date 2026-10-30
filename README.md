@@ -1,5 +1,8 @@
 # Multiplayer API for Balatro
 
+This fork supports Steam-free Community login on its `mobile` branch. See
+[MOBILE_PATCHES.md](MOBILE_PATCHES.md) for setup and upstream maintenance.
+
 Multiplayer API (mod id `MultiplayerAPI`, global `MPAPI`) is a [Steamodded](https://github.com/Steamodded/smods) library mod that gives other Balatro mods online multiplayer. It handles the account and server connection, lobbies, matchmaking, actions between players, chat, replays and moderation. The mods built on it only describe their own game rules.
 
 It is part of the Balatro Multiplayer Platform:
@@ -33,7 +36,7 @@ Requirements:
 
 - [Steamodded](https://github.com/Steamodded/smods) (>= 1.0.0~BETA-1814a)
 - [Lovely Injector](https://github.com/ethangreen-dev/lovely-injector) (>= 0.10)
-- Balatro running through Steam (the API signs in with your Steam account)
+- For the Official server: Balatro running through Steam (the API signs in with your Steam account). A custom Community server also supports Steam-free mobile login on this branch.
 
 Steps:
 
@@ -41,7 +44,7 @@ Steps:
 2. Download the latest release of this mod from the [Releases page](https://github.com/Balatro-Multiplayer/BalatroMultiplayerAPI/releases).
 3. Extract it into its own folder in your Balatro `Mods` directory. Make sure the folder is not nested inside a second folder of the same name.
 4. Install at least one gamemode mod ([PvP](https://github.com/Balatro-Multiplayer/BalatroMultiplayerPvP) or [Speedrunning](https://github.com/Balatro-Multiplayer/BalatroMultiplayerSpeedrunning)) the same way.
-5. Launch the game through Steam.
+5. Launch the game through Steam, or use your mobile build with a custom Community server.
 
 ## Configuration
 
@@ -63,7 +66,7 @@ By default the game plays on the Official server. To play on a Community server,
    ```
 
 3. If `config/MultiplayerAPI.jkr` exists in the Balatro save folder, delete it (it can hold older settings).
-4. Start Balatro through Steam. The game logs in with Device login, so it still needs the Steam client for your Steam id. The Lovely log shows `Login: Device (server is not Official)`.
+4. Start Balatro. Device login uses your Steam id when Steam is available; otherwise this branch uses a saved mobile identity. Set `mobile_display_name` in the API config to choose your name. The Lovely log shows `Login: Device (server is not Official)`.
 
 On a Community server your account and rating are separate from the Official server. Ranked does not need the launcher there, and you may queue with any mods. Player names on a Community server are not proven: anyone can use any name.
 
@@ -99,7 +102,7 @@ The best reference is the gamemode mods. BalatroMultiplayerSpeedrunning's `core.
 
 ### Startup: `MPAPI.on_loaded`
 
-Do your registration inside `MPAPI.on_loaded(fn)`. MPAPI runs these callbacks once Steam is available and the connection has started. While a callback runs, MPAPI sets `SMODS.current_mod` back to the mod that registered it. That way the action types and gamemodes you create there belong to your mod, which matters for lobby routing (see below).
+Do your registration inside `MPAPI.on_loaded(fn)`. MPAPI runs these callbacks once startup is ready and the connection has started (a Community server does not require Steam). While a callback runs, MPAPI sets `SMODS.current_mod` back to the mod that registered it. That way the action types and gamemodes you create there belong to your mod, which matters for lobby routing (see below).
 
 ### Pages and registering your mod
 

@@ -123,6 +123,7 @@ else
 	MPAPI.sendWarnMessage('Steam module failed to load')
 end
 
+MPAPI.load_mpapi_file('networking/device_identity.lua')
 MPAPI.load_mpapi_file('networking/connection.lua')
 MPAPI.load_mpapi_file('networking/nakama_lobby.lua')
 MPAPI.load_mpapi_file('networking/nakama_notify.lua')
@@ -182,7 +183,7 @@ G.E_MANAGER:add_event(Event({
 	blockable = false,
 	blocking = false,
 	func = function()
-		if not G.STEAM then
+		if not G.STEAM and (MPAPI._internal.conn.is_official_server() or MPAPI._internal.conn.force_steam_login) then
 			return false
 		end
 		MPAPI._internal.set_ready(true)

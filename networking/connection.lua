@@ -322,17 +322,26 @@ function connection:_on_device_session(session)
 	self:_nakama_session_init(session)
 end
 
--- A server that is not Official takes a Device login keyed by the raw
--- SteamID64, with no username: the server gives the same Steam id the same
--- account and takes the Steam name from session_init. Nothing proves either,
--- so any player there can log in as anyone.
+-- Community servers keep the desktop Steam identity when available. Without
+-- Steam, use a saved installation credential rather than a shared guest id.
 function connection:_try_device_auth()
-	local steam_id, err = self.steam.get_steam_id()
-	if not steam_id then
-		fail(self, MPAPI.OfflineReason.STEAM_NOT_RUNNING, 'Steam id unavailable: ' .. tostring(err))
-		return
+	local device_id, err
+	if self.steam and self.steam.available() then
+		device_id, err = self.steam.get_steam_id()
+		if not device_id then
+			fail(self, MPAPI.OfflineReason.STEAM_NOT_RUNNING, 'Steam id unavailable: ' .. tostring(err))
+			return
+		end
+	else
+		device_id, err = MPAPI.networking.device_identity.get()
+		if not device_id then
+			fail(self, MPAPI.OfflineReason.OTHER, 'Device identity unavailable: ' .. tostring(err))
+			return
+		end
+		local name = MPAPI.config and MPAPI.config.mobile_display_name
+		self.steam_name = type(name) == 'string' and name:match('%S') and name or ('Mobile-' .. device_id:sub(-8))
 	end
-	self.nakama_client.authenticate_device(steam_id, nil, true, nil, function(session)
+	self.nakama_client.authenticate_device(device_id, nil, true, nil, function(session)
 		self:_on_device_session(session)
 	end)
 end
@@ -393,12 +402,13 @@ function connection:connect()
 		return
 	end
 
-	if not self.steam or not self.steam.available() then
+	local steam_available = self.steam and self.steam.available()
+	if self.official and not steam_available then
 		fail(self, MPAPI.OfflineReason.STEAM_NOT_RUNNING, 'Steam is not available')
 		return
 	end
 
-	self.steam_name = self.steam.get_persona_name() or 'Player'
+	self.steam_name = steam_available and self.steam.get_persona_name() or 'Player'
 
 	self:_do_auth()
 end
