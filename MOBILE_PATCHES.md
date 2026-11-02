@@ -20,7 +20,7 @@ Install this branch's API alongside PvP, and configure the API:
 return {
     ['chat_enabled'] = false,
     ['use_custom_server'] = true,
-    ['server_host'] = 'YOUR_UNRAID_IP',
+    ['server_host'] = 'custom_address',
     ['server_port'] = 7350,
     ['server_secure'] = false,
     ['nakama_server_key'] = 'defaultkey',
@@ -28,7 +28,7 @@ return {
 }
 ```
 
-Replace `YOUR_UNRAID_IP`. Set the server's `BMP_SERVER_KIND=community`.
+Replace `custom_address`. Set the server's `BMP_SERVER_KIND=community`.
 If old settings override the config, remove `config/MultiplayerAPI.jkr`
 from the game's save directory and restart. Leave `mpapi/mobile-device-id.txt`
 in place. Back up that file privately: it grants access to the mobile account;
@@ -36,6 +36,34 @@ deleting it creates a new account, and copying it to another device shares
 the account. Renaming the display name does not change the identity.
 
 ## Upstream updates
+
+### Automated updates
+
+The [sync workflow](.github/workflows/sync-mobile.yml) checks upstream `main`
+daily at 00:00 UTC and can also be run from Actions → Sync mobile with upstream
+→ Run workflow. It merges upstream directly into a review branch based on
+`mobile`, runs every standalone test with Lua 5.1 and LuaJIT, and opens or
+updates one pull request targeting `mobile`. Updating the fork's `main` first
+is unnecessary. With no new upstream commits, it does nothing.
+
+To enable it, commit the workflow on `mobile` and copy just the workflow file
+onto the fork's default branch (`main`). Scheduled workflows must exist on
+the default branch. Enable Actions for the fork and, in Settings → Actions →
+General → Workflow permissions, enable **Allow GitHub Actions to create and
+approve pull requests**. The workflow uses the built-in token; no extra secret
+is needed. Keep merge commits enabled in the repository settings.
+
+Conflicts or failing tests stop the run before publication; inspect the failed
+Actions run and resolve the merge manually. The `automation/sync-mobile` branch
+is reserved for this workflow. It never force-pushes or writes to `main` or
+`mobile`. Repeated runs merge new changes into the same review branch.
+
+Test the PR on devices, then use **Create a merge commit** to merge it into
+`mobile`; do not squash or rebase, since future syncs need upstream ancestry.
+Update the builder's pinned API SHA separately when ready to package. The
+workflow does not publish builds or validate device networking.
+
+### Manual updates
 
 From a clean checkout:
 
