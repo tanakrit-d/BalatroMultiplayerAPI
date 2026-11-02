@@ -39,9 +39,9 @@ the account. Renaming the display name does not change the identity.
 
 ### Automated updates
 
-The [sync workflow](.github/workflows/sync-mobile.yml) checks upstream `main`
+The [sync workflow](.github/workflows/sync-mobile.yml) checks the latest official GitHub release
 daily at 00:00 UTC and can also be run from Actions → Sync mobile with upstream
-→ Run workflow. It merges upstream directly into a review branch based on
+→ Run workflow. It merges that release directly into a review branch based on
 `mobile`, runs every standalone test with Lua 5.1 and LuaJIT, and opens or
 updates one pull request targeting `mobile`. Updating the fork's `main` first
 is unnecessary. With no new upstream commits, it does nothing.
@@ -56,7 +56,7 @@ approve pull requests**. The workflow uses the built-in token; no extra secret
 is needed. Keep merge commits enabled in the repository settings.
 
 Conflicts or failing tests stop the run before publication; inspect the failed
-Actions run and resolve the merge manually. The `automation/sync-mobile` branch
+Actions run and resolve the merge manually. The `automation/sync-mobile-release` branch
 is reserved for this workflow. It never force-pushes or writes to `main` or
 `mobile`. Repeated runs merge new changes into the same review branch.
 
@@ -72,14 +72,13 @@ From a clean checkout:
 ```sh
 git fetch upstream --tags
 git switch mobile
-git merge upstream/main
+git merge OFFICIAL_RELEASE_TAG
 lua tests/mobile_login_test.lua
 git diff --check
 ```
 
 Resolve any conflicts while preserving both upstream behavior and this
-patch. Test on a device before pushing `mobile` to `origin`. Use upstream
-release tags instead of `upstream/main` when updating to a specific release.
+patch. Test on a device before pushing `mobile` to `origin`. Replace `OFFICIAL_RELEASE_TAG` with the selected official release tag.
 Keep patch commits focused, merge rather than rebase published history, and
 never use GitHub's fork sync to overwrite `mobile`.
 
@@ -93,3 +92,12 @@ has not been validated by the standalone Lua tests.
 Record the exact API and PvP commits used for each device-tested build in
 `MOBILE_BASELINE.md`. Source archives from the `mobile` branch include these
 patches; inherited upstream GitHub releases do not.
+
+## Existing baseline
+
+The current mobile baseline already includes upstream 1.0.3 source, while the
+latest official GitHub release is v1.0.1. Keep this history; do not downgrade
+or reset it. Future syncs merge official release tags only. The iOS builder
+holds new stable PvP packages until both official releases include the existing
+baseline, match the mobile manifest versions, and have been merged into mobile.
+The old `automation/sync-mobile` branch is not used by this workflow.

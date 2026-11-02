@@ -25,28 +25,37 @@ jobs:
 
       - name: Prepare upstream merge
         id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin '+refs/heads/mobile:refs/remotes/origin/mobile'
+          release_tag=$(gh api repos/Balatro-Multiplayer/BalatroMultiplayerAPI/releases/latest --jq '.tag_name')
+          if [[ ! "$release_tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unsupported stable release tag: $release_tag" >&2
+            exit 1
+          fi
           git fetch https://github.com/Balatro-Multiplayer/BalatroMultiplayerAPI.git \
-            '+refs/heads/main:refs/remotes/upstream/main'
+            "+refs/tags/$release_tag:refs/remotes/upstream/release"
+          echo "Official release: $release_tag" >> "$GITHUB_STEP_SUMMARY"
 
-          if git merge-base --is-ancestor upstream/main origin/mobile; then
-            echo 'Mobile already includes upstream/main.' >> "$GITHUB_STEP_SUMMARY"
+          if git merge-base --is-ancestor upstream/release origin/mobile; then
+            git switch --detach origin/mobile
+            echo 'Mobile already includes the latest official release. No downgrade or history rewrite was attempted.' >> "$GITHUB_STEP_SUMMARY"
             echo 'needed=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           # Reuse the review branch without rewriting published history.
-          if git ls-remote --exit-code --heads origin automation/sync-mobile; then
+          if git ls-remote --exit-code --heads origin automation/sync-mobile-release; then
             git fetch origin \
-              '+refs/heads/automation/sync-mobile:refs/remotes/origin/automation/sync-mobile'
-            git switch --create automation/sync-mobile origin/automation/sync-mobile
+              '+refs/heads/automation/sync-mobile-release:refs/remotes/origin/automation/sync-mobile-release'
+            git switch --create automation/sync-mobile-release origin/automation/sync-mobile-release
           else
-            git switch --create automation/sync-mobile origin/mobile
+            git switch --create automation/sync-mobile-release origin/mobile
           fi
 
           merge_ref() {
@@ -63,22 +72,22 @@ jobs:
             fi
           }
           merge_ref origin/mobile
-          merge_ref upstream/main
+          merge_ref upstream/release
           echo 'needed=true' >> "$GITHUB_OUTPUT"
-          echo "upstream_sha=$(git rev-parse upstream/main)" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$(git rev-parse 'upstream/release^{commit}')" >> "$GITHUB_OUTPUT"
           echo "mobile_sha=$(git rev-parse origin/mobile)" >> "$GITHUB_OUTPUT"
 
       - name: Install Lua runtimes
-        if: steps.merge.outputs.needed == 'true'
+        if: steps.merge.outputs.needed == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           sudo apt-get update
           sudo apt-get install --yes lua5.1 luajit
 
       - name: Check merged code
-        if: steps.merge.outputs.needed == 'true'
+        if: steps.merge.outputs.needed == 'true' || github.event_name == 'workflow_dispatch'
         shell: bash
         env:
-          MOBILE_BASE: ${{ steps.merge.outputs.mobile_sha }}
+          MOBILE_BASE: ${{ steps.merge.outputs.mobile_sha || 'origin/mobile' }}
         run: |
           set -euo pipefail
           test -f tests/mobile_login_test.lua
@@ -88,7 +97,8 @@ jobs:
               "$runtime" "$test_file"
             done
           done
-          git diff --check "$MOBILE_BASE" HEAD
+          git -c core.whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol \
+            diff --check "$MOBILE_BASE" HEAD
 
       - name: Publish review branch and pull request
         if: steps.merge.outputs.needed == 'true'
@@ -101,12 +111,12 @@ jobs:
           set -euo pipefail
           # Upstream is read-only: publish branches and PRs only in this fork.
           git remote set-url --push origin https://github.com/tanakrit-d/BalatroMultiplayerAPI.git
-          git push origin HEAD:refs/heads/automation/sync-mobile
-          pr_url=$(gh pr list --base mobile --head automation/sync-mobile \
+          git push origin HEAD:refs/heads/automation/sync-mobile-release
+          pr_url=$(gh pr list --base mobile --head automation/sync-mobile-release \
             --state open --json url --jq '.[0].url // empty')
           body_file="$RUNNER_TEMP/mobile-sync-pr.md"
           cat > "$body_file" <<EOF
-          Merge upstream main into mobile, preserving the mobile patch history.
+          Merge the latest official upstream release into mobile, preserving the mobile patch history.
 
           Upstream commit: $UPSTREAM_SHA
 
@@ -117,8 +127,8 @@ jobs:
           Merge this PR with a merge commit to retain upstream ancestry. Squashing or rebasing will make later syncs repeat upstream commits. This branch is managed by the sync workflow; make mobile fixes on mobile.
           EOF
           if [ -z "$pr_url" ]; then
-            pr_url=$(gh pr create --base mobile --head automation/sync-mobile \
-              --title 'Merge upstream updates into mobile' --body-file "$body_file")
+            pr_url=$(gh pr create --base mobile --head automation/sync-mobile-release \
+              --title 'Merge official upstream release into mobile' --body-file "$body_file")
           else
             gh pr edit "$pr_url" --body-file "$body_file"
           fi
