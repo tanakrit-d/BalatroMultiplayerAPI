@@ -45,6 +45,8 @@ daily at 00:00 UTC and can also be run from Actions → Sync mobile with upstrea
 `mobile`, runs every standalone test with Lua 5.1 and LuaJIT, and opens or
 updates one pull request targeting `mobile`. Updating the fork's `main` first
 is unnecessary. With no new upstream commits, it does nothing.
+All branches and pull requests are published only to `tanakrit-d/BalatroMultiplayerAPI`.
+The original project is a read-only source; never push or open a PR upstream.
 
 To enable it, commit the workflow on `mobile` and copy just the workflow file
 onto the fork's default branch (`main`). Scheduled workflows must exist on

@@ -95,10 +95,12 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          GH_REPO: tanakrit-d/BalatroMultiplayerAPI
           UPSTREAM_SHA: ${{ steps.merge.outputs.upstream_sha }}
         run: |
           set -euo pipefail
+          # Upstream is read-only: publish branches and PRs only in this fork.
+          git remote set-url --push origin https://github.com/tanakrit-d/BalatroMultiplayerAPI.git
           git push origin HEAD:refs/heads/automation/sync-mobile
           pr_url=$(gh pr list --base mobile --head automation/sync-mobile \
             --state open --json url --jq '.[0].url // empty')
