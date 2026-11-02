@@ -1,0 +1,125 @@
+name: Sync mobile with upstream
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-mobile
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'tanakrit-d/BalatroMultiplayerAPI'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Prepare upstream merge
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin '+refs/heads/mobile:refs/remotes/origin/mobile'
+          git fetch https://github.com/Balatro-Multiplayer/BalatroMultiplayerAPI.git \
+            '+refs/heads/main:refs/remotes/upstream/main'
+
+          if git merge-base --is-ancestor upstream/main origin/mobile; then
+            echo 'Mobile already includes upstream/main.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'needed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Reuse the review branch without rewriting published history.
+          if git ls-remote --exit-code --heads origin automation/sync-mobile; then
+            git fetch origin \
+              '+refs/heads/automation/sync-mobile:refs/remotes/origin/automation/sync-mobile'
+            git switch --create automation/sync-mobile origin/automation/sync-mobile
+          else
+            git switch --create automation/sync-mobile origin/mobile
+          fi
+
+          merge_ref() {
+            if ! git merge --no-edit "$1"; then
+              {
+                echo '### Mobile sync needs conflict resolution'
+                echo "Could not merge \`$1\` into the review branch."
+                echo 'Conflicting files:'
+                git diff --name-only --diff-filter=U
+                echo 'No branch update was published. Resolve the merge manually and rerun.'
+              } >> "$GITHUB_STEP_SUMMARY"
+              git merge --abort
+              exit 1
+            fi
+          }
+          merge_ref origin/mobile
+          merge_ref upstream/main
+          echo 'needed=true' >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=$(git rev-parse upstream/main)" >> "$GITHUB_OUTPUT"
+          echo "mobile_sha=$(git rev-parse origin/mobile)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Lua runtimes
+        if: steps.merge.outputs.needed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes lua5.1 luajit
+
+      - name: Check merged code
+        if: steps.merge.outputs.needed == 'true'
+        shell: bash
+        env:
+          MOBILE_BASE: ${{ steps.merge.outputs.mobile_sha }}
+        run: |
+          set -euo pipefail
+          test -f tests/mobile_login_test.lua
+          for runtime in lua5.1 luajit; do
+            for test_file in tests/*.lua; do
+              echo "Running $test_file with $runtime"
+              "$runtime" "$test_file"
+            done
+          done
+          git diff --check "$MOBILE_BASE" HEAD
+
+      - name: Publish review branch and pull request
+        if: steps.merge.outputs.needed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: tanakrit-d/BalatroMultiplayerAPI
+          UPSTREAM_SHA: ${{ steps.merge.outputs.upstream_sha }}
+        run: |
+          set -euo pipefail
+          # Upstream is read-only: publish branches and PRs only in this fork.
+          git remote set-url --push origin https://github.com/tanakrit-d/BalatroMultiplayerAPI.git
+          git push origin HEAD:refs/heads/automation/sync-mobile
+          pr_url=$(gh pr list --base mobile --head automation/sync-mobile \
+            --state open --json url --jq '.[0].url // empty')
+          body_file="$RUNNER_TEMP/mobile-sync-pr.md"
+          cat > "$body_file" <<EOF
+          Merge upstream main into mobile, preserving the mobile patch history.
+
+          Upstream commit: $UPSTREAM_SHA
+
+          All standalone tests passed with Lua 5.1 and LuaJIT, including mobile login; the merge diff passed whitespace checks.
+
+          Before merging, test Community login without Steam, Official authentication, account persistence, reconnect/backgrounding, and a full PvP match on devices. After merging, update the builder's pinned API commit when ready to package.
+
+          Merge this PR with a merge commit to retain upstream ancestry. Squashing or rebasing will make later syncs repeat upstream commits. This branch is managed by the sync workflow; make mobile fixes on mobile.
+          EOF
+          if [ -z "$pr_url" ]; then
+            pr_url=$(gh pr create --base mobile --head automation/sync-mobile \
+              --title 'Merge upstream updates into mobile' --body-file "$body_file")
+          else
+            gh pr edit "$pr_url" --body-file "$body_file"
+          fi
+          echo "Mobile update ready for review: $pr_url" >> "$GITHUB_STEP_SUMMARY"
