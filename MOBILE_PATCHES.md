@@ -95,9 +95,9 @@ patches; inherited upstream GitHub releases do not.
 
 ## Existing baseline
 
-The current mobile baseline already includes upstream 1.0.3 source, while the
-latest official GitHub release is v1.0.1. Keep this history; do not downgrade
-or reset it. Future syncs merge official release tags only. The iOS builder
-holds new stable PvP packages until both official releases include the existing
-baseline, match the mobile manifest versions, and have been merged into mobile.
+The `mobile` branch includes the official `v1.0.5` release, merged while
+preserving the existing mobile history. Future syncs merge official release
+tags only. The workflow opens review PRs; it does not update `main` or merge
+those PRs automatically. The iOS builder's pinned commits are updated separately.
+This source merge does not establish a new device-tested baseline.
 The old `automation/sync-mobile` branch is not used by this workflow.
