@@ -16,7 +16,7 @@ function MPAPI._internal.mm.on_nakama_matched(handle, match_id)
 	if not match_id then
 		handle._nakama_ticket = nil
 		if handle._nakama_requeue then
-			MPAPI.sendDebugMessage('[mmdbg] matched group refused by the server, queueing again')
+			MPAPI.match_log('debug', '[mmdbg] matched group refused by the server, queueing again')
 			handle._nakama_requeue()
 		else
 			mm.remove_handle(handle)
@@ -84,9 +84,14 @@ end
 -- itself via ui/ranked_queue_cancelled_overlay.lua, once, for every mod.
 function MPAPI._internal.mm.cancel_handle(handle, reason)
 	local mm = MPAPI._internal.mm
-	local kind = reason == 'launcher_outdated'
-		and MPAPI.ErrorKind.RANKED_LAUNCHER_OUTDATED
-		or MPAPI.ErrorKind.RANKED_MODS_OUTDATED
+	local kind
+	if reason == 'launcher_outdated' then
+		kind = MPAPI.ErrorKind.RANKED_LAUNCHER_OUTDATED
+	elseif reason == 'verification_timeout' then
+		kind = MPAPI.ErrorKind.RANKED_VERIFICATION_TIMEOUT
+	else
+		kind = MPAPI.ErrorKind.RANKED_MODS_OUTDATED
+	end
 	handle:_fire(MPAPI.MatchmakingEvent.ERROR, MPAPI.make_error(kind, 'Ranked queue cancelled: ' .. tostring(reason)))
 	mm.remove_handle(handle)
 

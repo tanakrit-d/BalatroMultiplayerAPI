@@ -4,6 +4,31 @@
 MPAPI._internal.lobby = MPAPI._internal.lobby or {}
 local L = MPAPI._internal.lobby
 
+-- How long a leave waits for the server to confirm the last log batch. More than
+-- one server tick, so the batch is handled before the leave signal.
+local LEAVE_ACK_TIMEOUT_SECONDS = 1
+
+-- Runs fn after `seconds` of real time, not game time, so a paused game still
+-- leaves; at once when there is no event manager (headless tests).
+L.after_real_seconds = function(seconds, fn)
+	if not (G and G.E_MANAGER and Event) then
+		fn()
+		return
+	end
+	G.E_MANAGER:add_event(Event({
+		trigger = 'after',
+		delay = seconds,
+		timer = 'REAL',
+		blocking = false,
+		blockable = false,
+		no_delete = true,
+		func = function()
+			fn()
+			return true
+		end,
+	}))
+end
+
 L.create_object = function(opts)
 	local lobby = {
 		code = opts.code,
@@ -29,10 +54,20 @@ L.create_object = function(opts)
 		_local_mode = opts.local_mode or false,
 		-- Every other lobby is hosted as a Nakama match: see api/lobby/nakama.lua.
 		_nakama = opts.nakama or false,
-		-- Server-owned game state (Nakama lobbies): { ready = {id=true},
-		-- started = nil | { seed, stake, options }, setup = { open, results } }.
+		-- Server-owned game state (Nakama lobbies):
+		--   ready: { [player_id] = true }
+		--   started: nil | { seed, stake, options }
+		--   reported: { [player_id] = true } (players who reported a result)
+		--   result_pending: true while the server holds the started game's result open
+		--   setup: { open = nil | the open Setup, results = { [step id] = result } }
 		-- See api/action/builtin.lua.
-		_game = { ready = {}, started = nil, reported = {}, setup = { open = nil, results = {} } },
+		_game = {
+			ready = {},
+			started = nil,
+			reported = {},
+			result_pending = false,
+			setup = { open = nil, results = {} },
+		},
 	}
 
 	function lobby:on(event_name, handler)
@@ -157,16 +192,36 @@ L.create_object = function(opts)
 			return
 		end
 		self._leaving = true
-		MPAPI.networking.nakama_lobby.leave(function(err)
-			if err then
-				MPAPI.sendWarnMessage('[nakama_lobby] leave failed: ' .. tostring(err))
+		-- Log events recorded this frame wait for the end-of-frame flush, which a
+		-- leave would cut off. The server runs a leave signal at once but handles
+		-- match data on its next tick, so the last batch asks for an ack and the
+		-- leave waits for it (or a refusal, or the timeout: an older server never
+		-- acks).
+		local left = false
+		local function leave_server()
+			if left then
+				return
 			end
-			L.cleanup(self)
-			self:_fire(MPAPI.LobbyEvent.DISCONNECTED)
-			if MPAPI._internal.on_lobby_disconnected then
-				MPAPI._internal.on_lobby_disconnected()
+			left = true
+			if self._destroyed then
+				return
 			end
-		end)
+			MPAPI.networking.nakama_lobby.leave(function(err)
+				if err then
+					MPAPI.sendWarnMessage('[nakama_lobby] leave failed: ' .. tostring(err))
+				end
+				L.cleanup(self)
+				self:_fire(MPAPI.LobbyEvent.DISCONNECTED)
+				if MPAPI._internal.on_lobby_disconnected then
+					MPAPI._internal.on_lobby_disconnected()
+				end
+			end)
+		end
+		if L.flush_log_events(self, leave_server) and not left then
+			L.after_real_seconds(LEAVE_ACK_TIMEOUT_SECONDS, leave_server)
+		else
+			leave_server()
+		end
 	end
 
 	lobby._pending_actions = {}
@@ -208,6 +263,12 @@ L.create_object = function(opts)
 
 	function lobby:report_result(placements, cb)
 		L.report_result(self, placements, cb)
+	end
+
+	-- Whether the server holds the started game's result open (set_result_pending), as of the
+	-- latest snapshot: a host that took over mid-run reads it here, since it never asked for the hold.
+	function lobby:is_result_pending()
+		return self._game.result_pending == true
 	end
 
 	function lobby:set_result_pending(pending, cb)
@@ -256,11 +317,15 @@ L.cleanup = function(lobby)
 	end
 	lobby._destroyed = true
 
-	if lobby._nakama then
-		MPAPI.networking.nakama_lobby.forget()
+	-- A leave can be answered after the player is already in another lobby, which
+	-- by then owns the match and the chat: only let go of this lobby's own.
+	local NL = MPAPI.networking.nakama_lobby
+	-- A lobby that never attached owns no match, so it has nothing to forget.
+	if lobby._nakama and lobby._match_id and NL._current_match_id() == lobby._match_id then
+		NL.forget()
 	end
 
-	MPAPI.chat.cleanup()
+	MPAPI.chat.cleanup(lobby)
 
 	lobby._pending_actions = {}
 

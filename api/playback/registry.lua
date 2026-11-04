@@ -24,10 +24,16 @@ end
 -- registered like any other opcode if a consumer wants to react to them (e.g.
 -- to seed initial run state from "manifest"), not treated specially here.
 function MPAPI.playback.dispatch(mod_id, opcode, args, ctx)
+	-- Older logs recorded a shop pack's OPEN click as USE, with its Booster identity.
+	local ref = type(args) == 'table' and args[3]
+	if opcode == MPAPI.OPCODE.USE and type(ref) == 'table' and ref[2] == 'Booster' then
+		opcode, args = MPAPI.OPCODE.OPEN_PACK, { MPAPI.replay.AREA.shop_booster, args[1], ref }
+	end
 	local mod_handlers = mod_id and MPAPI.playback._handlers[mod_id]
 	local fn = mod_handlers and mod_handlers[opcode]
 	if not fn then
-		MPAPI.sendDebugMessage(
+		MPAPI.match_log(
+			'debug',
 			'MPAPI.playback: no handler for ' .. tostring(mod_id) .. '.' .. tostring(opcode) .. ' (ignored)'
 		)
 		return
@@ -56,11 +62,11 @@ end
 function MPAPI.playback.launch(mod_id, run_id)
 	local fn = mod_id and MPAPI.playback._launchers[mod_id]
 	if not fn then
-		MPAPI.sendDebugMessage('MPAPI.playback: no launcher for ' .. tostring(mod_id) .. ' (ignored)')
+		MPAPI.match_log('debug', 'MPAPI.playback: no launcher for ' .. tostring(mod_id) .. ' (ignored)')
 		return
 	end
 	if not MPAPI.playback._focus_for_launch(mod_id) then
-		MPAPI.sendDebugMessage('MPAPI.playback: could not switch to ' .. tostring(mod_id) .. ' for its replay (ignored)')
+		MPAPI.match_log('debug', 'MPAPI.playback: could not switch to ' .. tostring(mod_id) .. ' for its replay (ignored)')
 		return
 	end
 	return fn(run_id)
@@ -117,7 +123,7 @@ function MPAPI.playback.rejoin(mod_id, active, lobby_data)
 	end
 	local fn = mod_id and MPAPI.playback._rejoin_launchers[mod_id]
 	if not fn then
-		MPAPI.sendDebugMessage('MPAPI.playback: no rejoin launcher for ' .. tostring(mod_id) .. ' (ignored)')
+		MPAPI.match_log('debug', 'MPAPI.playback: no rejoin launcher for ' .. tostring(mod_id) .. ' (ignored)')
 		return
 	end
 	-- The fast-forward must roll from the same pools the live run did.

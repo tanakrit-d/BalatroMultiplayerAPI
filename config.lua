@@ -1,5 +1,6 @@
 return {
 	['chat_enabled'] = false,
+	['chat_key'] = 't',
 	-- Optional name for Steam-free Community login (default: Mobile-<id suffix>).
 	-- ['mobile_display_name'] = 'Your name',
 	-- To play on a Community server, set use_custom_server = true and its

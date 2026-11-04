@@ -204,25 +204,18 @@ MPAPI.RLOG_CODE {
 	end,
 }
 
--- buy/open_pack/voucher share one write shape and one hook site (the opcode
--- chosen dynamically by the bought card's set, see the buy_from_shop hook
--- below) but are three distinct RLOG_CODEs, one per opcode string.
+-- Shop purchases share one write shape. Pack openings are recorded by use_card;
+-- ordinary purchases and vouchers by buy_from_shop.
 local function shop_purchase_write(self, area, idx, ref, cost, human, buy_and_use)
 	-- cost and the buy_and_use flag trail the existing {area, idx, ref}
 	-- positions -- appended, not inserted, so any reader keying off
 	-- args[1]/args[2] (area/idx) is unaffected by their presence.
 	self:record({ area, idx, ref, cost, buy_and_use or false }, human)
 end
--- Confirmed live: vanilla's own G.FUNCS.buy_from_shop calls
--- G.FUNCS.check_for_buy_space(c1) unless e.config.id == 'buy_and_use' -- and
--- that check ONLY recognizes Voucher/Enhanced/Default/Joker/consumeable
--- cards as things it knows how to validate space for. A Booster Pack is none
--- of those (card.ability.set == 'Booster', card.ability.consumeable is nil),
--- so the check unconditionally fails and buy_from_shop silently returns
--- false -- no error, nothing added anywhere -- UNLESS the buy_and_use id is
--- set, which is how the real "BUY" button on a pack card is actually wired
--- (functions/UI_definitions.lua). Every replayed open_pack was therefore
--- silently failing to buy anything at all.
+-- Replay goes through G.FUNCS.buy_from_shop for every shop purchase. For a
+-- Booster Pack that hook hands over to use_card (vanilla's check_for_buy_space
+-- does not know packs, and buying first would charge the cost twice), so only
+-- Card:open charges the pack.
 local function shop_purchase_replay(self, args, ctx)
 	if ctx.schema_version >= 1 then
 		if not ctx.is_pov then return end
@@ -248,8 +241,7 @@ MPAPI.RLOG_CODE {
 	replay = shop_purchase_replay,
 }
 
--- use/pack_pick share one write shape and one hook site (G.FUNCS.use_card;
--- the opcode is chosen by whether the card being used lives in G.pack_cards).
+-- use/pack_pick share one write shape; use_card also records shop pack openings.
 local function use_write(self, idx, targets, ref, target_refs, human)
 	self:record({ idx, targets, ref, target_refs }, human)
 end
@@ -373,8 +365,10 @@ MPAPI.RLOG_CODE {
 MPAPI.RLOG_CODE {
 	key = MPAPI.OPCODE.PLAY,
 	mods = { 'pvp', 'spdrn' },
-	write = function(self, played, played_refs, human)
-		self:record({ played, played_refs }, human)
+	-- The third arg is the owned jokers (RLOG.joker_tokens), recorded for the
+	-- web viewer; replay() only reads args[1]/args[2].
+	write = function(self, played, played_refs, human, jokers)
+		self:record({ played, played_refs, jokers }, human)
 	end,
 	-- Confirmed live (against a real flagged production match, via SPDRN's own
 	-- copy of this same fix -- see that file's comment for the full crash
@@ -434,8 +428,11 @@ MPAPI.RLOG_CODE {
 MPAPI.RLOG_CODE {
 	key = MPAPI.OPCODE.SELECT_BLIND,
 	mods = { 'pvp', 'spdrn' },
-	write = function(self, human)
-		self:record(0, human)
+	-- args are [0, blind_key]: the leading 0 is the original (unused) payload,
+	-- kept so older readers keying off args[1] are unaffected; blind_key
+	-- (e.g. "bl_small", "bl_mp_nemesis") is appended for the web viewer.
+	write = function(self, human, blind_key)
+		self:record({ 0, blind_key }, human)
 	end,
 	replay = function(self, _args, ctx)
 		if ctx.schema_version >= 1 then
@@ -473,6 +470,38 @@ MPAPI.RLOG_CODE {
 	replay = function(self, _args, ctx)
 		if ctx.is_pov then
 			MPAPI.playback.leave_shop_if_needed()
+		end
+	end,
+}
+
+-- Web-viewer-only records: nothing to apply on replay.
+-- idol_roll: [roll, winner, cards] -- the roll in 0..1, the winning card as
+-- "<rank><suit>" (T = 10), and the deck's cards as "<rank><suit><count>" in
+-- selection order (the IDOL_ROLL:: debug line's payload, as a positional list).
+MPAPI.RLOG_CODE {
+	key = 'idol_roll',
+	mods = { 'pvp', 'spdrn' },
+	write = function(self, roll, winner, cards)
+		self:record({ roll, winner, cards })
+	end,
+	replay = function(self, _args, ctx)
+		if ctx.schema_version >= 1 then
+			-- no-op
+		end
+	end,
+}
+
+-- deck_snapshot: [cards] -- the full deck at the end of the run (see
+-- RLOG.deck_tokens), recorded just before the END trailer.
+MPAPI.RLOG_CODE {
+	key = 'deck_snapshot',
+	mods = { 'pvp', 'spdrn' },
+	write = function(self, cards)
+		self:record({ cards })
+	end,
+	replay = function(self, _args, ctx)
+		if ctx.schema_version >= 1 then
+			-- no-op
 		end
 	end,
 }
@@ -523,6 +552,10 @@ end
 local buy_from_shop_ref = G.FUNCS.buy_from_shop
 function G.FUNCS.buy_from_shop(e)
 	local c1 = e.config.ref_table
+	-- Packs open through use_card; buying them first would charge their cost twice.
+	if c1 and c1:is(Card) and c1.ability.set == 'Booster' then
+		return G.FUNCS.use_card(e, true)
+	end
 	if c1 and c1:is(Card) and RLOG.is_active() then
 		local human = string.format("action:boughtCardFromShop,card:%s,cost:%s", c1.ability.name, c1.cost)
 		local area = RLOG.area_enum(c1.area)
@@ -530,9 +563,7 @@ function G.FUNCS.buy_from_shop(e)
 		if area and idx then
 			local key = MPAPI.OPCODE.BUY
 			local set = c1.ability and c1.ability.set
-			if set == "Booster" then
-				key = MPAPI.OPCODE.OPEN_PACK
-			elseif set == "Voucher" then
+			if set == "Voucher" then
 				key = MPAPI.OPCODE.VOUCHER
 			end
 			local ref = RLOG.card_ref(c1)
@@ -547,7 +578,12 @@ function G.FUNCS.use_card(e, mute, nosave)
 	local card = e.config and e.config.ref_table
 	if card and card.ability and card.ability.name and RLOG.is_active() then
 		local human = string.format("action:usedCard,card:%s", card.ability.name)
-		if card.area == (G and G.pack_cards) then
+		if card.area and card.area == G.shop_booster and card.ability.set == 'Booster' then
+			local idx = RLOG.index_in_area(card)
+			if idx then
+				MPAPI.RLOGCodes.open_pack:write(RLOG.area_enum(card.area), idx, RLOG.card_ref(card), card.cost, human)
+			end
+		elseif card.area == (G and G.pack_cards) then
 			local idx = RLOG.index_in_area(card, G.pack_cards)
 			if idx then
 				local targets = RLOG.highlighted_hand_indices()
@@ -588,9 +624,16 @@ local play_cards_ref = G.FUNCS.play_cards_from_highlighted
 function G.FUNCS.play_cards_from_highlighted(...)
 	local played = RLOG.highlighted_hand_indices()
 	local played_refs = RLOG.card_refs(played)
+	-- Before the play resolves: scoring can destroy jokers (Gros Michel, ...).
+	local owned_jokers = RLOG.joker_tokens()
 	play_cards_ref(...)
 	if #played > 0 and RLOG.is_active() then
-		MPAPI.RLOGCodes.play:write(played, played_refs, "action:play,cards:" .. table.concat(played, "."))
+		MPAPI.RLOGCodes.play:write(
+			played,
+			played_refs,
+			"action:play,cards:" .. table.concat(played, "."),
+			owned_jokers
+		)
 	end
 end
 
@@ -651,8 +694,10 @@ local select_blind_ref = G.FUNCS.select_blind
 function G.FUNCS.select_blind(e)
 	select_blind_ref(e)
 	if RLOG.is_active() then
+		local blind_key = e.config.ref_table.key or e.config.ref_table.name
 		MPAPI.RLOGCodes.select_blind:write(
-			string.format("action:selectBlind,blind:%s", tostring(e.config.ref_table.key or e.config.ref_table.name))
+			string.format("action:selectBlind,blind:%s", tostring(blind_key)),
+			blind_key and tostring(blind_key) or nil
 		)
 	end
 end

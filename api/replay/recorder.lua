@@ -152,28 +152,49 @@ local function normalize_for_hash(args)
 end
 
 -- Format an opcode's args into the positional arg string.
--- Each token is either a scalar -> "1" or a list -> dot-joined "1.3.5".
--- A bare scalar/string is treated as a single token.
+-- Each token is a scalar -> "1", or a list. A list of scalars is dot-joined
+-- ("1.3.5"); a list of lists (e.g. card refs) joins its members with ",", and
+-- one level deeper with ";" -- so a played hand's refs read
+-- "-1.pc.Hearts.King,-2.pc.Spades.10.e:m_glass" rather than "table: 0x...".
+-- A bare scalar/string is treated as a single token. This is the human-facing
+-- text line only: the hash and the wire form use the structured args.
+local FMT_LIST_SEPS = { ".", ",", ";" }
+
+local function fmt_height(tok)
+	if type(tok) ~= "table" then return 0 end
+	local h = 1
+	for _, v in ipairs(tok) do
+		if type(v) == "table" then h = math.max(h, 1 + fmt_height(v)) end
+	end
+	return h
+end
+
+local function fmt_token(tok)
+	if type(tok) ~= "table" then return tostring(tok) end
+	local sep = FMT_LIST_SEPS[fmt_height(tok)] or ";"
+	local parts = {}
+	for _, v in ipairs(tok) do
+		parts[#parts + 1] = fmt_token(v)
+	end
+	return table.concat(parts, sep)
+end
+
 local function fmt_args(args)
 	if args == nil then return "" end
 	if type(args) ~= "table" then return tostring(args) end
 	local parts = {}
 	for _, tok in ipairs(args) do
-		if type(tok) == "table" then
-			local sub = {}
-			for _, v in ipairs(tok) do
-				sub[#sub + 1] = tostring(v)
-			end
-			parts[#parts + 1] = table.concat(sub, ".")
-		else
-			parts[#parts + 1] = tostring(tok)
-		end
+		parts[#parts + 1] = fmt_token(tok)
+	end
+	-- Trailing empty tokens (a play with no jokers) leave no dangling space.
+	while #parts > 0 and parts[#parts] == "" do
+		parts[#parts] = nil
 	end
 	return table.concat(parts, " ")
 end
 
 local function emit(msg)
-	sendTraceMessage(msg, "MULTIPLAYER")
+	MPAPI.match_log('trace', msg, 'MULTIPLAYER')
 end
 
 -- Milliseconds elapsed since begin_run, for each event's `t`. Falls back to a
@@ -219,7 +240,7 @@ end
 -- RLOG.broadcast_event.
 local function emit_carbon(msg, t, opcode, args)
 	RLOG._carbon_full[#RLOG._carbon_full + 1] = msg
-	sendTraceMessage(msg, "MULTIPLAYER")
+	MPAPI.match_log('trace', msg, 'MULTIPLAYER')
 	RLOG.broadcast_event(t, opcode, args)
 end
 
@@ -371,6 +392,49 @@ function RLOG.card_refs(indices, area)
 	return out
 end
 
+-- Identity-only snapshots for the web viewer. Deliberately NOT card_ref: a
+-- ref consumes an id from RLOG._card_ids, and a playback that does not also
+-- learn it would then fail to resolve a later already-seen reference to that
+-- card. Plain strings carry no ids, so recording them cannot desync a replay.
+--
+-- joker_tokens: one string per owned joker, left to right: "j_key" or
+-- "j_key|edition" (e.g. "j_blueprint|foil").
+function RLOG.joker_tokens()
+	local out = {}
+	local cards = G and G.jokers and G.jokers.cards
+	for i = 1, cards and #cards or 0 do
+		local card = cards[i]
+		local key = card and card.config and card.config.center and card.config.center.key
+		if key then
+			local token = key
+			if card.edition and card.edition.type then token = token .. "|" .. card.edition.type end
+			out[#out + 1] = token
+		end
+	end
+	return out
+end
+
+-- deck_tokens: one string per card in the full deck: <suit initial><rank>
+-- plus "|"-joined tags in card_ref's vocabulary, e.g. "HK", "SA|e:m_glass|ed:foil".
+local RANK_CODE = { Ace = "A", King = "K", Queen = "Q", Jack = "J", ["10"] = "T" }
+function RLOG.deck_tokens()
+	local out = {}
+	local cards = G and G.playing_cards
+	for i = 1, cards and #cards or 0 do
+		local card = cards[i]
+		local base = card and card.base
+		if base and base.suit and base.value then
+			local token = tostring(base.suit):sub(1, 1) .. (RANK_CODE[base.value] or tostring(base.value))
+			local center = card.config and card.config.center
+			if center and center.key and center.key ~= "c_base" then token = token .. "|e:" .. center.key end
+			if card.edition and card.edition.type then token = token .. "|ed:" .. card.edition.type end
+			if card.seal then token = token .. "|s:" .. card.seal end
+			out[#out + 1] = token
+		end
+	end
+	return out
+end
+
 -- Playback-side counterpart to RLOG.card_ref. `id`s are assigned independently
 -- by each RECORDING client (RLOG._card_ids above, scoped to that client's own
 -- match), so they're only meaningful within one recorded player's own event
@@ -512,6 +576,13 @@ function RLOG.end_run(outcome)
 	if not RLOG._run_active then return end
 
 	local json = require("json")
+	-- The final deck, for the web viewer's deck panel. A failure here must never
+	-- cost the run its END/CHK trailer, so it is isolated.
+	local snapshot = MPAPI.RLOGCodes and MPAPI.RLOGCodes.deck_snapshot
+	if snapshot then
+		pcall(function() snapshot:write(RLOG.deck_tokens()) end)
+	end
+
 	local t_end = elapsed_ms()
 	emit_carbon(RLOG.CARBON_PREFIX .. " END " .. json.encode(outcome or {}), t_end, MPAPI.OPCODE.END, outcome or {})
 

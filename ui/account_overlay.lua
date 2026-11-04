@@ -12,6 +12,7 @@ local build_account_tab_content
 local build_chat_tab_content
 local format_run_date
 local match_status_label_and_colour
+local rating_change_label_and_colour
 local match_history_row
 local build_history_tab_content
 local fetch_history_page
@@ -358,6 +359,23 @@ chat_section = function()
 				}),
 			},
 		}
+		if MPAPI.config.chat_enabled then
+			nodes[#nodes + 1] = {
+				n = G.UIT.R,
+				config = { align = 'cm', padding = 0.04 },
+				nodes = {
+					UIBox_button({
+						id = MPAPI.chat.REBIND_BUTTON_ID,
+						label = { MPAPI.chat.rebinding and localize('b_chat_key_waiting')
+							or localize('b_chat_key'):format(MPAPI.chat.get_key():upper()) },
+						button = 'mpapi_chat_rebind',
+						minw = 3, minh = 0.6, scale = 0.35,
+						colour = MPAPI.chat.rebinding and G.C.ORANGE or G.C.BLUE,
+						focus_args = { nav = 'wide' },
+					}),
+				},
+			}
+		end
 	elseif chat_blocked then
 		nodes[#nodes + 1] = {
 			n = G.UIT.R,
@@ -451,6 +469,24 @@ match_status_label_and_colour = function(status)
 	return tostring(status), G.C.UI.TEXT_INACTIVE
 end
 
+-- A rated run's rating change and the rating it left ('+12 (1512)'), green,
+-- red or grey ('+0'), formatted like ui/ranked_result_notice.lua. Placement
+-- games have no change to show (the notice shows the new rating instead).
+-- nil when unrated.
+rating_change_label_and_colour = function(run)
+	local rating = run.rating
+	local delta = rating and not rating.isPlacement and not rating.justPlaced and tonumber(rating.delta)
+	if not delta then
+		return nil
+	end
+	local label = string.format('%+d', delta)
+	if tonumber(rating.newRating) then
+		label = label .. string.format(' (%d)', rating.newRating)
+	end
+	local colour = delta > 0 and G.C.GREEN or delta < 0 and G.C.RED or G.C.UI.TEXT_INACTIVE
+	return label, colour
+end
+
 -- One row per run: date / lobby code / status, plus "View Log" (opens the
 -- website's visual RLOG viewer -- apps/web's /matches/:runId page, same
 -- automatic-decode-and-render viewer the site's own "My Matches" list links
@@ -461,6 +497,7 @@ end
 -- BalatroMultiplayerPvP's replay_browser.lua already uses for its own list.
 match_history_row = function(run)
 	local status_label, status_colour = match_status_label_and_colour(run.status)
+	local rating_label, rating_colour = rating_change_label_and_colour(run)
 	local can_replay = run.status ~= 'active'
 
 	G.FUNCS['mpapi_match_history_view_log_' .. run.id] = function()
@@ -490,6 +527,9 @@ match_history_row = function(run)
 			{ n = G.UIT.C, config = { align = 'cl', minw = 2, padding = 0.05 }, nodes = {
 				{ n = G.UIT.T, config = { text = status_label, scale = 0.32, colour = status_colour } },
 			} },
+			{ n = G.UIT.C, config = { align = 'cl', minw = 1.8, padding = 0.05 }, nodes = rating_label and {
+				{ n = G.UIT.T, config = { text = rating_label, scale = 0.32, colour = rating_colour } },
+			} or {} },
 			{ n = G.UIT.C, config = { align = 'cm', padding = 0.05 }, nodes = {
 				UIBox_button({
 					label = { localize('b_view_log') },
@@ -535,7 +575,22 @@ build_history_tab_content = function()
 		} } }
 	end
 
-	local rows = {}
+	-- Same column widths and padding as match_history_row, so the labels sit over their cells.
+	local function header_cell(minw, key)
+		return { n = G.UIT.C, config = { align = 'cl', minw = minw, padding = 0.05 }, nodes = {
+			{ n = G.UIT.T, config = { text = localize(key), scale = 0.28, colour = G.C.UI.TEXT_INACTIVE } },
+		} }
+	end
+	local rows = { {
+		n = G.UIT.R,
+		config = { align = 'cl', padding = 0.05 },
+		nodes = {
+			header_cell(2.2, 'k_match_history_col_date'),
+			header_cell(2.2, 'k_match_history_col_code'),
+			header_cell(2, 'k_match_history_col_status'),
+			header_cell(1.8, 'k_match_history_col_rating'),
+		},
+	} }
 	local first = (h.page - 1) * HISTORY_ROWS_PER_PAGE + 1
 	for i = first, math.min(#h.runs, first + HISTORY_ROWS_PER_PAGE - 1) do
 		rows[#rows + 1] = match_history_row(h.runs[i])
@@ -659,6 +714,13 @@ G.FUNCS.mpapi_chat_toggle = function(e)
 	account_overlay_inner:update()
 end
 
+-- Arms the rebind: the next key press becomes the chat key (see
+-- MPAPI.chat.capture_key). Pressing the button again cancels.
+G.FUNCS.mpapi_chat_rebind = function(e)
+	MPAPI.chat.rebinding = not MPAPI.chat.rebinding
+	account_overlay_inner:update()
+end
+
 G.FUNCS.mpapi_link_discord = function(e)
 	MPAPI._internal.get_discord_link_url(function(err, data)
 		if err then
@@ -703,6 +765,7 @@ function MPAPI.open_account_overlay()
 		return
 	end
 	_state.tab = 'account'
+	MPAPI.chat.rebinding = false
 	_state.history = { page = 1, next_cursor = nil, loading = false, error = nil, runs = {} }
 	MPAPI.account_overlay:as_overlay()
 end

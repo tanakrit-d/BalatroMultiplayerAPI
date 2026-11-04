@@ -28,7 +28,8 @@ function reset_idol_card()
 			threshold = threshold + (entry.count / total_weight)
 			if raw_random < threshold then
 				local idol_card = entry.card
-			sendDebugMessage(
+				MPAPI.match_log(
+					'debug',
 					string.format(
 						'(Idol) Selected %s of %s, with a count of %d',
 						idol_card.base.value, idol_card.base.suit, entry.count
@@ -39,7 +40,7 @@ function reset_idol_card()
 				G.GAME.current_round.idol_card.suit = idol_card.base.suit
 				G.GAME.current_round.idol_card.id = idol_card.base.id
 
-				-- Log the hit so the website log parser can show which card won and how
+				-- Log the hit so the match log (match page) can show which card won and how
 				-- likely it was. Cards are compact "<rank><suit><count>" tokens in
 				-- selection order (T = 10), base64'd so the line stays one token:
 				--   IDOL_ROLL::<base64 of {"roll":0.62,"winner":"QH","cards":["KS4","QH3","AS1"]}>
@@ -59,7 +60,23 @@ function reset_idol_card()
 					card_token(idol_card.base.value, idol_card.base.suit),
 					table.concat(tokens, ',')
 				)
-				sendDebugMessage('IDOL_ROLL::' .. love.data.encode('string', 'base64', idol_payload), 'IdolAlgo')
+				MPAPI.match_log('debug', 'IDOL_ROLL::' .. love.data.encode('string', 'base64', idol_payload), 'IdolAlgo')
+
+				-- Also into the replay log, so the website sees idol rolls from a
+				-- server-stored match, not only from an uploaded Lovely log.
+				if MPAPI.RLOGCodes and MPAPI.RLOGCodes.idol_roll and MPAPI.replay.is_active() then
+					local card_tokens = {}
+					for _, reel_entry in ipairs(valid_idol_cards) do
+						card_tokens[#card_tokens + 1] = card_token(reel_entry.value, reel_entry.suit) .. tostring(reel_entry.count)
+					end
+					-- A fixed-point string: a float under 1e-4 would print differently in Lua and in
+					-- the server's JSON, which breaks the replay hash.
+					MPAPI.RLOGCodes.idol_roll:write(
+						string.format('%.6f', raw_random),
+						card_token(idol_card.base.value, idol_card.base.suit),
+						card_tokens
+					)
+				end
 				break
 			end
 		end

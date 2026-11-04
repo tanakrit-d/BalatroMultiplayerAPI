@@ -123,6 +123,7 @@ L.apply_snapshot = function(lobby, snapshot, announce)
 			MPAPI.set_player_ready(lobby, id, true)
 		end
 	end
+	lobby._game.result_pending = game.resultPending == true
 	lobby._game.reported = {}
 	for _, id in ipairs(type(game.reported) == 'table' and game.reported or {}) do
 		lobby._game.reported[id] = true
@@ -279,19 +280,20 @@ end
 local function attach(lobby, match_id, on_ready)
 	local session = MPAPI.get_nakama_session()
 	lobby.player_id = session and session.user_id or lobby.player_id
+	lobby._match_id = match_id
 	NL().join(match_id, lobby.mod_id, {
 		data = function(op, data)
 			on_data(lobby, on_ready, op, data)
 		end,
 		dropped = function()
-			MPAPI.sendDebugMessage('[nakama_lobby] socket dropped, rejoining ' .. tostring(lobby.code))
+			MPAPI.match_log('debug', '[nakama_lobby] socket dropped, rejoining ' .. tostring(lobby.code))
 		end,
 		rejoined = function()
 			lobby._server_restarting = nil
 			-- Usually a no-op: the rejoin snapshot already flushed. It catches the
 			-- case where that snapshot came before the socket counted as up.
 			L.flush_log_events(lobby)
-			MPAPI.sendDebugMessage('[nakama_lobby] rejoined ' .. tostring(lobby.code))
+			MPAPI.match_log('debug', '[nakama_lobby] rejoined ' .. tostring(lobby.code))
 			-- The new session starts as "not catching up" on the server.
 			if lobby._catching_up then
 				lobby:set_catching_up(true)

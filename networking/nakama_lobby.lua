@@ -37,8 +37,6 @@ local RECONNECT_BACKOFF = { 0.5, 1, 2, 4 }
 -- snapshot arrives, the server's default is assumed.
 local DEFAULT_GRACE_SECONDS = 120
 local RECONNECT_GIVE_UP_MARGIN_SECONDS = 10
--- Refresh the session this long before it expires.
-local SESSION_REFRESH_MARGIN = 60
 
 local socket = nil
 local socket_open = false
@@ -46,6 +44,10 @@ local connect_waiters = nil -- callbacks waiting on an in-flight socket connect
 
 -- The lobby match this client is in, or nil.
 local match = nil -- { id, metadata, listener, lost_since, attempt }
+
+-- What the client last knew of its seat's grace period, kept after the match
+-- is gone: { grace_seconds, lost_at }.
+local last_seat = {}
 
 -- The lobby match this client watches as a spectator, or nil. Kept apart from
 -- `match`: watching doesn't take a seat, so it can't clash with the lobby (or
@@ -85,48 +87,14 @@ end
 -- Session
 ----------------------------------------------------------------------
 
-local function adopt_session(c, session)
-	c.nakama_session = session
-	c.nakama_client.set_bearer_token(session.token)
-end
-
-local function refresh_session(c, cb)
-	local session = c.nakama_session
-	local client = c.nakama_client
-	-- The refresh endpoint wants the server key, not the (expiring) bearer.
-	client.set_bearer_token(nil)
-	client.session_refresh(session.refresh_token, nil, function(refreshed)
-		if not refreshed or refreshed.error then
-			client.set_bearer_token(session.token)
-			if os.time() < session.expires then
-				cb(session)
-			else
-				cb(nil, 'Nakama session refresh failed: ' .. error_message(refreshed, 'no response'))
-			end
-			return
-		end
-		adopt_session(c, refreshed)
-		cb(refreshed)
-	end)
-end
-
 -- Calls cb(session) with a usable session, or cb(nil, message).
 local function with_session(cb)
 	local c = conn()
-	if not c or not c.nakama_client or not c.player_id then
+	if not c or not c.player_id then
 		cb(nil, 'Not connected')
 		return
 	end
-	local session = c.nakama_session
-	if session then
-		if session.refresh_token and session.expires - os.time() < SESSION_REFRESH_MARGIN then
-			refresh_session(c, cb)
-		else
-			cb(session)
-		end
-		return
-	end
-	cb(nil, 'No Nakama session')
+	c:with_session(cb)
 end
 
 ----------------------------------------------------------------------
@@ -417,7 +385,24 @@ end
 function NL.set_grace_seconds(grace_seconds)
 	if match then
 		match.grace_seconds = tonumber(grace_seconds)
+		last_seat.grace_seconds = match.grace_seconds
+		last_seat.lost_at = nil
 	end
+end
+
+-- About how many seconds the server still holds this client's seat, for a
+-- player told to restart the game. Counts from the socket drop when this
+-- client saw one; otherwise it is the whole grace period, because the client
+-- cannot know how long the seat has been dropped. At least 1.
+function NL.seat_grace_seconds_left()
+	local left = last_seat.grace_seconds
+	if not left or left <= 0 then
+		left = DEFAULT_GRACE_SECONDS
+	end
+	if last_seat.lost_at then
+		left = left - (love.timer.getTime() - last_seat.lost_at)
+	end
+	return math.max(1, math.floor(left))
 end
 
 -- gave_up is true when reconnecting ran out of time (the match is over, as the
@@ -425,6 +410,7 @@ end
 local function lose(reason, gave_up)
 	local lost = match
 	match = nil
+	last_seat.lost_at = lost and lost.lost_since or nil
 	if lost and lost.listener.lost then
 		lost.listener.lost(reason, gave_up == true)
 	end
